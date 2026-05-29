@@ -7,6 +7,7 @@ dependencies = [
     "fastapi==0.128.0",
     "uvicorn[standard]==0.40.0",
     "httpx>=0.28.1",
+    "scikit-learn>=1.5.0",
 ]
 
 [dependency-groups]
@@ -47,7 +48,6 @@ ignore = [
 "app/**/__init__.py" = ["F401"]
 "app/routers/*.py" = ["B008"]
 "app/main.py" = ["B008"]
-"app/models.py" = ["ERA001"]
 "tests/**/*.py" = ["S101", "ANN", "D"]
 
 [tool.ruff.lint.isort]
@@ -61,7 +61,7 @@ show_error_codes = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["torch.*", "transformers.*"]
+module = ["torch.*", "transformers.*", "sklearn.*"]
 ignore_missing_imports = true
 
 [tool.flake8]

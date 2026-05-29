@@ -7,8 +7,6 @@ import typing
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from app.models import process_risk_detection
-
 check_router = APIRouter(tags=["Dialogue Check"])
 
 
@@ -16,11 +14,6 @@ check_router = APIRouter(tags=["Dialogue Check"])
 class DialogueMessage(BaseModel):
     role: str = Field(description="Роль отправителя сообщения (user, support, assistant)")
     content: str = Field(description="Содержимое сообщения")
-
-
-def format_dialogue(messages: list[DialogueMessage]) -> str:
-    """Форматирует историю сообщений диалога в один текстовый блок."""
-    return "\n".join(f"{one_message.role}: {one_message.content}" for one_message in messages)
 
 
 @typing.final
@@ -50,10 +43,12 @@ def check_dialogue(
 ) -> DialogueCheckResponse:
     start_time = time.perf_counter()
 
-    raw_text = format_dialogue(request_body.messages)
+    messages = [
+        {"role": one_message.role, "content": one_message.content} for one_message in request_body.messages
+    ]
 
-    response = process_risk_detection(http_request.app.state.llm_client, raw_text)
-    predicted_red_flags = [RedFlagItem(category=response["category"])] if response else []
+    category = http_request.app.state.red_flag_model.check_dialogue(messages)
+    predicted_red_flags = [RedFlagItem(category=category)] if category else []
 
     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
 
