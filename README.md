@@ -2,6 +2,7 @@
 
 ---
 
+
 ## 🛠 Стек технологий
 
 * **Backend:** Python 3.11 + FastAPI 0.128 + Uvicorn 0.40
