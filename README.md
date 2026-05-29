@@ -4,6 +4,7 @@
 
 ## 🛠 Стек технологий
 
+
 * **Backend:** Python 3.11 + FastAPI 0.128 + Uvicorn 0.40
 * **LLM:** OpenRouter API
 * **Менеджер пакетов:** [uv](https://github.com/astral-sh/uv)
