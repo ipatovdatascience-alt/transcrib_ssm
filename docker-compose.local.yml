@@ -1,0 +1,29 @@
+name: red-flag-detector
+
+services:
+  app:
+    build: .
+    ports:
+      - "8787:8000"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # HF-режим (опционально):
+      # HF_TOKEN: ${HF_TOKEN:-}
+    # HF-режим (опционально):
+    # volumes:
+    #   - model_cache:/app/model_cache
+    command: uvicorn app.main:application --host 0.0.0.0 --port 8000 --reload
+    develop:
+      watch:
+        - action: sync
+          path: ./app
+          target: /app/app
+          ignore:
+            - __pycache__/
+            - "*.pyc"
+        - action: rebuild
+          path: pyproject.toml
+
+# HF-режим: раскомментируйте для кеша моделей
+# volumes:
+#   model_cache:

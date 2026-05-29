@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - run: gh release create ${{ github.ref_name }} --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: root
+          password: ${{ secrets.SSH_PASSWORD }}
+          envs: IMAGE,VERSION,OPENROUTER_API_KEY
+          script: |
+            set -e
+            docker stop app || true
+            docker rm app || true
+            docker images --filter "reference=$IMAGE" --format "{{.Repository}}:{{.Tag}}" | xargs -r docker rmi -f || true
+            docker pull $IMAGE:$VERSION
+            docker run -d \
+              --name app \
+              --restart unless-stopped \
+              -p 8787:8000 \
+              -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+              $IMAGE:$VERSION
+              # HF-режим: добавьте `-v model_cache:/app/model_cache \` для кеша локальной модели
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  notify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: wait for app ready
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf "http://$SSH_HOST:8787/health" && break
+            echo "Waiting for app to start... ($i/30)"
+            sleep 2
+          done
+
+      - name: notify evaluator
+        env:
+          EVAL_TOKEN: ${{ secrets.EVAL_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$EVAL_TOKEN" ]; then
+            echo "EVAL_TOKEN secret missing — skipping evaluator notify"
+            exit 0
+          fi
+          curl -fsS -X POST "https://eval.communityscanai.com/api/hooks/release" \
+            -H "Authorization: Bearer $EVAL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"version\":\"$VERSION\"}"

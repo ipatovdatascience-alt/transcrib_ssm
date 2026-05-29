@@ -1,0 +1,75 @@
+[project]
+name = "red-flag-detector"
+version = "1.0.0"
+description = "Dialogue Red Flag Detector API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.128.0",
+    "uvicorn[standard]==0.40.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.14.14",
+    "mypy==1.15.0",
+    "community-of-python-flake8-plugin",
+    "flake8-pyproject",
+    "pytest>=9.0.3",
+    "pre-commit>=4.6.0",
+]
+# HF
+# uv sync --group hf | Не ставится по умолчанию.
+hf = [
+    "transformers==5.0.0",
+    "torch==2.10.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "EM",       # flake8-errmsg: отдельная переменная для Exception не обязательна
+    "FBT",      # flake8-boolean-trap: bool аргументы допустимы
+    "TRY003",   # tryceratops: сообщения в exceptions допустимы
+    "D1",       # pydocstyle: не принуждаем писать docstrings повсюду
+    "D203",     # pydocstyle: конфликт с D211
+    "D213",     # pydocstyle: конфликт с D212
+    "FA",       # flake8-future-annotations: не нужно для Python 3.11+
+    "COM812",   # flake8-commas: конфликт с ruff format
+    "ISC001",   # implicit-str-concat: конфликт с ruff format
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/**/__init__.py" = ["F401"]
+"app/routers/*.py" = ["B008"]
+"app/main.py" = ["B008"]
+"app/models.py" = ["ERA001"]
+"tests/**/*.py" = ["S101", "ANN", "D"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["torch.*", "transformers.*"]
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 120
+select = ["COP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers --strict-config"
+filterwarnings = ["error"]
+pythonpath = ["."]
