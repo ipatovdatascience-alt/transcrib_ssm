@@ -149,3 +149,23 @@ def build_prompt(dialogue_text: str) -> str:
 Now classify this dialogue:
 {dialogue_text}
 Answer:"""
+
+
+def build_judge_prompt(dialogue_text: str, tfidf_label: str, llm_label: str) -> str:
+    """Промпт арбитра: зовётся ТОЛЬКО при конфликте — обе модели флагуют РАЗНЫЕ классы.
+
+    Судья видит диалог и два кандидата-нарушения и выбирает один. Уйти в clean он НЕ
+    может: сюда попадают лишь случаи, где обе модели согласны, что нарушение ЕСТЬ —
+    спор только о его виде. Это защищает recall (ни один флаг не теряется в арбитраже).
+    """
+    return f"""{_CLASSIFIER_PROMPT}
+
+Two classifiers disagree on WHICH violation this is. Both agree it is a violation (not clean).
+Candidate A (keyword model): {tfidf_label}
+Candidate B (semantic model): {llm_label}
+
+Pick the single label that best matches the user's decisive intent. You MUST choose one of: {tfidf_label}, {llm_label}. Do not choose clean.
+
+Dialogue:
+{dialogue_text}
+Answer:"""
