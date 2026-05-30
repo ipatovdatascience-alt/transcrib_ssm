@@ -51,9 +51,7 @@ def check_dialogue(
     start_time = time.perf_counter()
 
     raw_text = format_dialogue(request_body.messages)
-    raw_messages = [
-        {"role": one_message.role, "content": one_message.content} for one_message in request_body.messages
-    ]
+    raw_messages = [{"role": one_message.role, "content": one_message.content} for one_message in request_body.messages]
 
     response = process_risk_detection(
         http_request.app.state.llm_client,
