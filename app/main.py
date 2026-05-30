@@ -5,7 +5,7 @@ import os
 
 from fastapi import FastAPI
 
-from app.models import load_model
+from app.models import load_llm
 from app.routers import check_router, health_router
 
 app_logger = logging.getLogger("uvicorn.error")
@@ -13,7 +13,7 @@ app_logger = logging.getLogger("uvicorn.error")
 
 @contextlib.asynccontextmanager
 async def run_lifespan(fastapi_app: FastAPI) -> collections.abc.AsyncIterator[None]:
-    fastapi_app.state.red_flag_model = load_model()
+    fastapi_app.state.llm_client = load_llm()
 
     server_port = os.getenv("DEV_PORT", "8787")
     app_logger.info("Server: http://localhost:%s", server_port)
