@@ -139,12 +139,12 @@ Return only valid JSON:
 
 
 def build_prompt(dialogue_text: str) -> str:
-    """Собирает промпт: системные правила классификатора + few-shot примеры + целевой диалог."""
+    """Собирает промпт: системные правила классификатора + целевой диалог.
+
+    Few-shot примеры убраны (v2.1.7): на OOD-тесте они якорили модель на узких
+    формулировках train и роняли recall. _format_few_shot оставлен для отката.
+    """
     return f"""{_CLASSIFIER_PROMPT}
-
-Examples:
-
-{_format_few_shot()}
 
 Now classify this dialogue:
 {dialogue_text}
