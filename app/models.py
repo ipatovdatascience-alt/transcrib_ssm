@@ -1,13 +1,13 @@
 # ruff: noqa: RUF002, RUF003
-"""Детектор red flags: LLM few-shot как основной классификатор + TF-IDF fallback.
+"""Детектор red flags: ансамбль TF-IDF (высокий precision) + LLM few-shot (высокий recall).
 
-Основной путь — few-shot классификация через OpenRouter (см. app/prompt.py).
-Если LLM не ответил (сбой сети, таймаут, нераспарсенный ответ, нет ключа), решение
-принимает локальная TF-IDF + LinearSVC модель (линия релиза v1.0.1), обученная на
-train.json при старте. Так сервис не сваливает всё в clean при недоступности LLM.
+TF-IDF + LinearSVC (линия релиза v1.0.1, обучается на train.json при старте) спрашивается
+ПЕРВЫМ: он флагует редко, но почти наверняка (precision ≈91.7%), поэтому его флаг
+считается финальным. Если TF-IDF молчит (clean), решение принимает LLM few-shot через
+OpenRouter (см. app/prompt.py) — он добирает recall на нарушениях, которые TF-IDF
+пропустил (его recall низкий, ~47.6%).
 
-Важно: уверенный ответ LLM (включая clean) считается финальным — fallback срабатывает
-ТОЛЬКО когда LLM реально не дал валидной категории.
+Так точные флаги TF-IDF держат precision, а LLM держит recall.
 """
 
 from __future__ import annotations
@@ -168,22 +168,23 @@ def process_risk_detection(
     fallback_model: RedFlagModel | None = None,
     raw_messages: list[dict[str, str]] | None = None,
 ) -> dict[str, typing.Any] | None:
-    """Классифицирует диалог: LLM few-shot как основной, TF-IDF как fallback.
+    """Классифицирует диалог: ансамбль TF-IDF (высокий precision) + LLM (высокий recall).
 
     `messages` — диалог, уже отформатированный в текст с ролевыми префиксами.
-    Логика ансамбля:
-      - LLM вернул валидную категорию (включая clean) -> доверяем LLM;
-      - LLM не ответил (None: сбой сети/таймаут/нераспарсено/нет ключа) -> спрашиваем
-        TF-IDF fallback по сырым репликам, если он передан.
-    Возвращает {"category": <класс>} для нарушения либо None для clean/чистого диалога.
+    Логика ансамбля (TF-IDF приоритетнее на флаге):
+      - TF-IDF уверенно флагует нарушение (не clean) -> доверяем ему (P≈91.7%, ошибается редко);
+      - TF-IDF молчит (clean) -> спрашиваем LLM, чтобы добрать recall на пропущенном
+        (recall TF-IDF низкий, ~47.6%); берём категорию LLM, включая clean.
+    Возвращает {"category": <класс>} для нарушения либо None для чистого диалога.
     """
+    if fallback_model is not None and raw_messages is not None:
+        tfidf_category = fallback_model.check_dialogue(raw_messages)
+        if tfidf_category is not None:
+            return {"category": tfidf_category}
+
     category = _parse_category(
         llm_client.request_completion(build_prompt(messages), json_mode=False),
     )
-
-    if category is None and fallback_model is not None and raw_messages is not None:
-        category = fallback_model.check_dialogue(raw_messages)
-
     if category is None or category == CLEAN_LABEL:
         return None
     return {"category": category}
