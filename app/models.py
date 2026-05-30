@@ -27,7 +27,7 @@ from app.prompt import CATEGORIES, build_prompt
 
 _JSON_CATEGORY_RE = re.compile(r'"category"\s*:\s*"([a-z_]+)"')
 
-OPENROUTER_MODEL = "anthropic/claude-sonnet-4.6"
+OPENROUTER_MODEL = "anthropic/claude-opus-4.8"
 
 CLEAN_LABEL = "clean"
 
