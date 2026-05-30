@@ -1,20 +1,37 @@
 # ruff: noqa: RUF002, RUF003
-"""LLM-клиент и детектор red flags на основе few-shot классификации."""
+"""Детектор red flags: LLM few-shot как основной классификатор + TF-IDF fallback.
+
+Основной путь — few-shot классификация через OpenRouter (см. app/prompt.py).
+Если LLM не ответил (сбой сети, таймаут, нераспарсенный ответ, нет ключа), решение
+принимает локальная TF-IDF + LinearSVC модель (линия релиза v1.0.1), обученная на
+train.json при старте. Так сервис не сваливает всё в clean при недоступности LLM.
+
+Важно: уверенный ответ LLM (включая clean) считается финальным — fallback срабатывает
+ТОЛЬКО когда LLM реально не дал валидной категории.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import typing
 
 import httpx
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import FeatureUnion, Pipeline
+from sklearn.svm import LinearSVC
 
 from app.prompt import CATEGORIES, build_prompt
 
 _JSON_CATEGORY_RE = re.compile(r'"category"\s*:\s*"([a-z_]+)"')
 
 OPENROUTER_MODEL = "google/gemini-2.5-flash"
+
+CLEAN_LABEL = "clean"
+
+_TRAIN_PATH = pathlib.Path(__file__).resolve().parent.parent / "train.json"
 
 # Бюджет evaluator'а — 5000 мс/пример. Держим запас на сериализацию/сеть.
 _REQUEST_TIMEOUT_S = 4.5
@@ -88,20 +105,86 @@ def _parse_category(raw_content: str | None) -> str | None:
     return best_category
 
 
+def _format_dialogue(messages: list[dict[str, str]]) -> str:
+    """Склеивает реплики в один текст с ролевыми префиксами + усиленный user-блок.
+
+    Нарушения почти всегда в user-репликах, но роли support/chatbot дают контекст,
+    поэтому сохраняем все реплики и дополнительно дублируем конкатенацию user-реплик.
+    """
+    dialogue_lines = [f"{one_message.get('role', '')}: {one_message.get('content', '')}" for one_message in messages]
+    user_messages = " ".join(
+        one_message.get("content", "") for one_message in messages if one_message.get("role") == "user"
+    )
+    return "\n".join(dialogue_lines) + "\n[USER] " + user_messages
+
+
+def _build_pipeline() -> Pipeline:
+    # word 1-2 + char_wb 3-5: линия релиза v1.0.1. char n-граммы устойчивее к OOD-перефразировкам.
+    word_vec = TfidfVectorizer(analyzer="word", ngram_range=(1, 2), min_df=1, sublinear_tf=True)
+    char_vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=1, sublinear_tf=True)
+    return Pipeline(
+        [
+            ("features", FeatureUnion([("word", word_vec), ("char", char_vec)])),
+            ("clf", LinearSVC(class_weight="balanced")),
+        ],
+    )
+
+
+@typing.final
+class RedFlagModel:
+    """Локальный TF-IDF + LinearSVC fallback на случай недоступности LLM."""
+
+    def __init__(self, pipeline: Pipeline) -> None:
+        self._pipeline = pipeline
+
+    def check_dialogue(self, messages: list[dict[str, str]]) -> str | None:
+        """Возвращает категорию нарушения или None для чистого диалога."""
+        predicted_label = str(self._pipeline.predict([_format_dialogue(messages)])[0])
+        return None if predicted_label == CLEAN_LABEL else predicted_label
+
+
+def _extract_training_data() -> tuple[list[str], list[str]]:
+    train_records = json.loads(_TRAIN_PATH.read_text(encoding="utf-8"))
+    dialogue_texts: list[str] = []
+    dialogue_labels: list[str] = []
+    for one_record in train_records:
+        dialogue_texts.append(_format_dialogue(one_record["messages"]))
+        record_flags = one_record["expected_red_flags"]
+        dialogue_labels.append(record_flags[0]["category"] if record_flags else CLEAN_LABEL)
+    return dialogue_texts, dialogue_labels
+
+
+def load_model() -> RedFlagModel:
+    """Обучает TF-IDF fallback на train.json. Вызывается один раз при старте приложения."""
+    dialogue_texts, dialogue_labels = _extract_training_data()
+    model_pipeline = _build_pipeline()
+    model_pipeline.fit(dialogue_texts, dialogue_labels)
+    return RedFlagModel(model_pipeline)
+
+
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
+    fallback_model: RedFlagModel | None = None,
+    raw_messages: list[dict[str, str]] | None = None,
 ) -> dict[str, typing.Any] | None:
-    """Классифицирует диалог через LLM few-shot.
+    """Классифицирует диалог: LLM few-shot как основной, TF-IDF как fallback.
 
     `messages` — диалог, уже отформатированный в текст с ролевыми префиксами.
-    Возвращает {"category": <класс>} для нарушения либо None для clean/ошибки/сбоя
-    (None превращается в пустой predicted_red_flags — это и есть метка clean).
+    Логика ансамбля:
+      - LLM вернул валидную категорию (включая clean) -> доверяем LLM;
+      - LLM не ответил (None: сбой сети/таймаут/нераспарсено/нет ключа) -> спрашиваем
+        TF-IDF fallback по сырым репликам, если он передан.
+    Возвращает {"category": <класс>} для нарушения либо None для clean/чистого диалога.
     """
     category = _parse_category(
         llm_client.request_completion(build_prompt(messages), json_mode=False),
     )
-    if category is None or category == "clean":
+
+    if category is None and fallback_model is not None and raw_messages is not None:
+        category = fallback_model.check_dialogue(raw_messages)
+
+    if category is None or category == CLEAN_LABEL:
         return None
     return {"category": category}
 
