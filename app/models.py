@@ -1,11 +1,13 @@
 # ruff: noqa: RUF002, RUF003
-"""Детектор red flags: голосование TF-IDF (высокий precision) + LLM (высокий recall) + арбитр.
+"""Детектор red flags: ансамбль TF-IDF (высокий precision) + LLM few-shot (высокий recall).
 
-Обе модели смотрят на диалог всегда. TF-IDF + LinearSVC (линия релиза v1.0.1, обучается на
-train.json при старте) флагует редко, но почти наверняка (precision ≈91.7%); LLM через
-OpenRouter (см. app/prompt.py) добирает recall. Арбитраж по голосам (см. process_risk_detection):
-любой одиночный флаг проходит (OR -> recall), а при конфликте КЛАССОВ зовётся третий
-LLM-вызов-судья, который выбирает один из двух классов и не может уйти в clean.
+TF-IDF + LinearSVC (линия релиза v1.0.1, обучается на train.json при старте) спрашивается
+ПЕРВЫМ: он флагует редко, но почти наверняка (precision ≈91.7%), поэтому его флаг
+считается финальным. Если TF-IDF молчит (clean), решение принимает LLM few-shot через
+OpenRouter (см. app/prompt.py) — он добирает recall на нарушениях, которые TF-IDF
+пропустил (его recall низкий, ~47.6%).
+
+Так точные флаги TF-IDF держат precision, а LLM держит recall.
 """
 
 from __future__ import annotations
@@ -21,11 +23,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.svm import LinearSVC
 
-from app.prompt import CATEGORIES, build_judge_prompt, build_prompt
+from app.prompt import CATEGORIES, build_prompt
 
 _JSON_CATEGORY_RE = re.compile(r'"category"\s*:\s*"([a-z_]+)"')
 
-OPENROUTER_MODEL = "google/gemini-2.5-flash"
+OPENROUTER_MODEL = "anthropic/claude-sonnet-4.6"
 
 CLEAN_LABEL = "clean"
 
@@ -160,49 +162,32 @@ def load_model() -> RedFlagModel:
     return RedFlagModel(model_pipeline)
 
 
-def _get_llm_vote(llm_client: LLMClient, messages: str) -> str | None:
-    """LLM-классификатор: категория нарушения, либо None для clean/недоступности."""
-    category = _parse_category(llm_client.request_completion(build_prompt(messages), json_mode=False))
-    return None if category == CLEAN_LABEL else category
-
-
-def _resolve_conflict(llm_client: LLMClient, messages: str, tfidf_label: str, llm_label: str) -> str:
-    """LLM-арбитр при конфликте классов. Fallback на TF-IDF (P≈91.7%), НЕ в clean."""
-    judge_verdict = _parse_category(
-        llm_client.request_completion(build_judge_prompt(messages, tfidf_label, llm_label), json_mode=False),
-    )
-    return judge_verdict if judge_verdict in {tfidf_label, llm_label} else tfidf_label
-
-
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
     fallback_model: RedFlagModel | None = None,
     raw_messages: list[dict[str, str]] | None = None,
 ) -> dict[str, typing.Any] | None:
-    """Классифицирует диалог: голосование TF-IDF (высокий precision) + LLM (высокий recall) + арбитр.
+    """Классифицирует диалог: ансамбль TF-IDF (высокий precision) + LLM (высокий recall).
 
-    `messages` — диалог, уже отформатированный в текст с ролевыми префиксами. Обе модели
-    смотрят на диалог ВСЕГДА; решение принимает арбитраж по их голосам:
-      - обе clean -> clean (None);
-      - флагует ровно одна -> берём её класс (OR-голос: максимум recall);
-      - обе флагуют ОДИН класс -> он же;
-      - обе флагуют РАЗНЫЕ классы -> зовём LLM-судью (3-й вызов, только здесь),
-        он выбирает один из двух; судья не может уйти в clean -> recall не теряется.
+    `messages` — диалог, уже отформатированный в текст с ролевыми префиксами.
+    Логика ансамбля (TF-IDF приоритетнее на флаге):
+      - TF-IDF уверенно флагует нарушение (не clean) -> доверяем ему (P≈91.7%, ошибается редко);
+      - TF-IDF молчит (clean) -> спрашиваем LLM, чтобы добрать recall на пропущенном
+        (recall TF-IDF низкий, ~47.6%); берём категорию LLM, включая clean.
     Возвращает {"category": <класс>} для нарушения либо None для чистого диалога.
     """
-    tfidf_category = (
-        fallback_model.check_dialogue(raw_messages) if fallback_model is not None and raw_messages is not None else None
-    )
-    llm_category = _get_llm_vote(llm_client, messages)
+    if fallback_model is not None and raw_messages is not None:
+        tfidf_category = fallback_model.check_dialogue(raw_messages)
+        if tfidf_category is not None:
+            return {"category": tfidf_category}
 
-    if tfidf_category is None and llm_category is None:
+    category = _parse_category(
+        llm_client.request_completion(build_prompt(messages), json_mode=False),
+    )
+    if category is None or category == CLEAN_LABEL:
         return None
-    if tfidf_category is None:
-        return {"category": llm_category}
-    if llm_category is None or llm_category == tfidf_category:
-        return {"category": tfidf_category}
-    return {"category": _resolve_conflict(llm_client, messages, tfidf_category, llm_category)}
+    return {"category": category}
 
 
 def load_llm() -> LLMClient:
