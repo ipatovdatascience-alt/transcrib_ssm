@@ -29,3 +29,6 @@ Thumbs.db
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Промежуточный артефакт генератора (уже влит в train.json)
+synthetic.json
